@@ -164,6 +164,20 @@ export default function Home() {
 
     // Step 2: translate chunks one by one
     setStatus("translating");
+
+    saveSession({
+      chunks: receivedChunks,
+      originalText: receivedOriginal,
+      liveTranslation: "",
+      current: 0,
+      total: receivedChunks.length,
+      apiKey,
+      sourceLang,
+      targetLang,
+      fileName: fileNameRef.current,
+      prevText: "",
+    });
+
     let fullTranslation = "";
     let prevText = "";
 
