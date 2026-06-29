@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 type Status = "idle" | "uploading" | "translating" | "done" | "error";
 
@@ -8,6 +8,42 @@ interface ChunkData {
   index: number;
   text: string;
   context: string;
+}
+
+interface SessionData {
+  chunks: ChunkData[];
+  originalText: string;
+  liveTranslation: string;
+  current: number;
+  total: number;
+  apiKey: string;
+  sourceLang: string;
+  targetLang: string;
+  fileName: string;
+  prevText: string;
+}
+
+const SESSION_KEY = "babelz_session";
+
+function saveSession(data: SessionData) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+  } catch { /* quota exceeded, ignore */ }
+}
+
+function loadSession(): SessionData | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch { /* ignore */ }
 }
 
 interface DevEvent {
@@ -34,6 +70,7 @@ export default function Home() {
   const [devMode, setDevMode] = useState(true);
   const [devLog, setDevLog] = useState<DevEvent[]>([]);
   const [chunkTime, setChunkTime] = useState<number[]>([]);
+  const [savedSession, setSavedSession] = useState<SessionData | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef(false);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -41,6 +78,23 @@ export default function Home() {
   const translatedRef = useRef<HTMLPreElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
+  const fileNameRef = useRef("");
+
+  useEffect(() => {
+    const session = loadSession();
+    if (session) setSavedSession(session);
+  }, []);
+
+  useEffect(() => {
+    if (status === "translating") {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+        e.returnValue = "";
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  }, [status]);
 
   const syncScroll = useCallback((source: HTMLPreElement, target: HTMLPreElement) => {
     if (syncingRef.current) return;
@@ -73,6 +127,8 @@ export default function Home() {
     setCurrent(0);
     setTotal(0);
     setDevLog([]);
+
+    fileNameRef.current = file.name;
 
     log("system", { msg: "Iniciando", file: file.name, size: file.size });
 
@@ -113,6 +169,7 @@ export default function Home() {
 
     for (let i = 0; i < receivedChunks.length; i++) {
       if (abortRef.current) {
+        clearSession();
         log("system", { msg: "Cancelado por el usuario" });
         return;
       }
@@ -153,6 +210,19 @@ export default function Home() {
         prevText = chunk.text;
         setLiveTranslation(fullTranslation);
 
+        saveSession({
+          chunks: receivedChunks,
+          originalText: receivedOriginal,
+          liveTranslation: fullTranslation,
+          current: i + 1,
+          total: receivedChunks.length,
+          apiKey,
+          sourceLang,
+          targetLang,
+          fileName: fileNameRef.current,
+          prevText,
+        });
+
         log("progress", { chunk: i + 1, elapsed: `${elapsed}s`, textLen: data.translated.length });
 
         if (resultRef.current) {
@@ -166,6 +236,7 @@ export default function Home() {
       }
     }
 
+    clearSession();
     setStatus("done");
     setMessage("¡Traducción completada!");
     setResult({ original: receivedOriginal, translated: fullTranslation });
@@ -174,6 +245,7 @@ export default function Home() {
 
   const cancel = useCallback(() => {
     abortRef.current = true;
+    clearSession();
     setStatus("idle");
     setMessage("");
     setCurrent(0);
@@ -190,12 +262,15 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `traducido-${file?.name?.replace(/\.[^.]+$/, "") || "documento"}.txt`;
+    a.download = `traducido-${fileNameRef.current?.replace(/\.[^.]+$/, "") || "documento"}.txt`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [result, file]);
+    clearSession();
+  }, [result]);
 
   const reset = useCallback(() => {
+    clearSession();
+    setSavedSession(null);
     setResult(null);
     setLiveTranslation("");
     setOriginalText("");
@@ -209,6 +284,109 @@ export default function Home() {
     setTotal(0);
     setDevLog([]);
   }, []);
+
+  const restoreSessionFn = useCallback(() => {
+    if (!savedSession) return;
+    const s = savedSession;
+    setChunks(s.chunks);
+    setOriginalText(s.originalText);
+    setLiveTranslation(s.liveTranslation);
+    setCurrent(s.current);
+    setTotal(s.total);
+    setApiKey(s.apiKey);
+    setSourceLang(s.sourceLang);
+    setTargetLang(s.targetLang);
+    setStatus("translating");
+    setMessage(`Reanudando traducción: bloque ${s.current + 1}/${s.total}...`);
+    setError("");
+    setChunkTime([]);
+    setDevLog([]);
+    setSavedSession(null);
+    fileNameRef.current = s.fileName;
+
+    log("system", { msg: "Restaurando sesión", chunks: s.total, done: s.current });
+
+    let fullTranslation = s.liveTranslation;
+    let prevText = s.prevText;
+    const remaining = s.chunks.slice(s.current);
+
+    (async () => {
+      for (let i = 0; i < remaining.length; i++) {
+        if (abortRef.current) {
+          clearSession();
+          log("system", { msg: "Cancelado por el usuario" });
+          return;
+        }
+
+        const chunk = remaining[i];
+        const idx = s.current + i;
+        setCurrent(idx + 1);
+        setMessage(`Traduciendo bloque ${idx + 1}/${s.total}...`);
+
+        const start = Date.now();
+
+        try {
+          const res = await fetch("/api/translate/chunk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: chunk.text,
+              context: chunk.context,
+              previousTranslation: prevText,
+              apiKey: s.apiKey.trim() || undefined,
+              sourceLang: s.sourceLang,
+              targetLang: s.targetLang,
+            }),
+          });
+
+          const data = await res.json();
+          const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+          if (!res.ok) {
+            log("error", { chunk: idx + 1, error: data.error, elapsed: `${elapsed}s` });
+            setStatus("error");
+            setError(`Error en bloque ${idx + 1}: ${data.error}`);
+            return;
+          }
+
+          setChunkTime((prev) => [...prev, Date.now() - start]);
+          fullTranslation += (fullTranslation ? "\n\n" : "") + data.translated;
+          prevText = chunk.text;
+          setLiveTranslation(fullTranslation);
+
+          saveSession({
+            chunks: s.chunks,
+            originalText: s.originalText,
+            liveTranslation: fullTranslation,
+            current: idx + 1,
+            total: s.total,
+            apiKey: s.apiKey,
+            sourceLang: s.sourceLang,
+            targetLang: s.targetLang,
+            fileName: fileNameRef.current,
+            prevText,
+          });
+
+          log("progress", { chunk: idx + 1, elapsed: `${elapsed}s`, textLen: data.translated.length });
+
+          if (resultRef.current) {
+            resultRef.current.scrollTop = resultRef.current.scrollHeight;
+          }
+        } catch {
+          log("error", { chunk: idx + 1, error: "Error de conexión" });
+          setStatus("error");
+          setError(`Error de conexión en bloque ${idx + 1}`);
+          return;
+        }
+      }
+
+      clearSession();
+      setStatus("done");
+      setMessage("¡Traducción completada!");
+      setResult({ original: s.originalText, translated: fullTranslation });
+      log("system", { msg: "Completado", chunks: s.total });
+    })();
+  }, [savedSession, log]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -248,6 +426,31 @@ export default function Home() {
       </header>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 space-y-6">
+        {savedSession && !result && !isWorking && (
+          <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center space-y-3">
+            <p className="text-sm font-medium text-amber-800">
+              Hay una traducción en pausa ({savedSession.current} de {savedSession.total} bloques traducidos)
+            </p>
+            <p className="text-xs text-amber-600">
+              Archivo: {savedSession.fileName}
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={restoreSessionFn}
+                className="rounded-xl bg-amber-600 text-white px-5 py-2.5 text-sm font-semibold hover:bg-amber-700 transition-all"
+              >
+                Reanudar traducción
+              </button>
+              <button
+                onClick={() => { clearSession(); setSavedSession(null); }}
+                className="rounded-xl border border-amber-300 bg-white/70 px-5 py-2.5 text-sm text-amber-700 hover:bg-amber-100/70 transition-colors"
+              >
+                Descartar
+              </button>
+            </div>
+          </section>
+        )}
+
         {!result && !isWorking && (
           <>
             <section
