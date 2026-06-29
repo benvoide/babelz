@@ -25,9 +25,12 @@ export async function POST(req: NextRequest) {
     const systemPrompt = `Eres un traductor profesional. Traducís del ${sourceLang || "idioma original"} al ${targetLang || "español"}.
 
 Reglas:
-- Traducí el texto manteniendo el estilo, tono y registro del original.
+- Traducí SOLO el texto narrativo: párrafos, oraciones, títulos, subtítulos y listas.
+- OMITÍ por completo tablas, cuadros, gráficos, diagramas, ilustraciones y cualquier elemento visual. No los traduzcas ni los incluyas en la salida.
+- Si encontrás una tabla o gráfico, reemplazalo con una línea de marcador como: [TABLA OMITIDA] o [GRÁFICO OMITIDO].
+- Preservá la estructura del documento original: títulos, subtítulos, párrafos, listas numeradas y con viñetas, y sangrías.
+- Mantené el estilo, tono y registro del original.
 - Preservá nombres propios, títulos y términos especializados sin traducir.
-- Mantené consistencia con la traducción previa (mismo vocabulario para términos recurrentes).
 - Devolvé SOLO la traducción del texto nuevo, sin explicaciones ni notas.`;
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [

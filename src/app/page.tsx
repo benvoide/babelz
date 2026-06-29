@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { generateTranslationPdf } from "@/lib/format-pdf";
 
 type Status = "idle" | "uploading" | "translating" | "done" | "error";
 
@@ -277,6 +278,19 @@ export default function Home() {
     const a = document.createElement("a");
     a.href = url;
     a.download = `traducido-${fileNameRef.current?.replace(/\.[^.]+$/, "") || "documento"}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    clearSession();
+  }, [result]);
+
+  const downloadPdf = useCallback(() => {
+    if (!result) return;
+    const baseName = fileNameRef.current?.replace(/\.[^.]+$/, "") || "documento";
+    const blob = generateTranslationPdf(result.translated, baseName);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `traducido-${baseName}.pdf`;
     a.click();
     URL.revokeObjectURL(url);
     clearSession();
@@ -638,7 +652,13 @@ export default function Home() {
                 onClick={download}
                 className="rounded-xl bg-stone-700 text-white px-5 py-2.5 text-sm font-semibold hover:bg-stone-800 active:bg-stone-600 transition-all shadow-sm hover:shadow-md"
               >
-                Descargar traducción (.txt)
+                Descargar (.txt)
+              </button>
+              <button
+                onClick={downloadPdf}
+                className="rounded-xl bg-stone-700 text-white px-5 py-2.5 text-sm font-semibold hover:bg-stone-800 active:bg-stone-600 transition-all shadow-sm hover:shadow-md"
+              >
+                Descargar (.pdf)
               </button>
               <button
                 onClick={reset}
